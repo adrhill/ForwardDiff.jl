@@ -191,6 +191,71 @@ end
 checktag(::JacobianConfig{T},f,x) where {T} = checktag(T,f,x)
 Base.eltype(::Type{JacobianConfig{T,V,N,D}}) where {T,V,N,D} = Dual{T,V,N}
 
+#############
+# JVPConfig #
+#############
+
+struct JVPConfig{T,V,N,D} <: AbstractConfig{N}
+    seeds::NTuple{N,Partials{N,V}}
+    duals::D
+end
+
+"""
+    ForwardDiff.JVPConfig(f, x::AbstractArray, dx::AbstractArray, chunk::Chunk = Chunk(x))
+
+Return a `JVPConfig` instance based on the type of `f` and type/shape of the input
+vectors `x` and `dx`.
+
+The returned `JVPConfig` instance contains all the work buffers required by
+`ForwardDiff.jvp` and `ForwardDiff.jvp!` when the target function takes the form `f(x)`.
+
+If `f` is `nothing` instead of the actual target function, then the returned instance can
+be used with any target function. However, this will reduce ForwardDiff's ability to catch
+and prevent perturbation confusion (see https://github.com/JuliaDiff/ForwardDiff.jl/issues/83).
+
+This constructor does not store/modify `x`.
+"""
+function JVPConfig(f::F,
+                   x::AbstractArray{V},
+                   dx::AbstractArray{V},
+                   ::Chunk{N} = Chunk(x),
+                   ::T = Tag(f, V)) where {F,V,N,T}
+    seeds = construct_jvp_seeds(Partials{N,V}, dx) # TODO: add construct_jvp_seeds
+    duals = similar(x, Dual{T,V,N})
+    return JVPConfig{T,V,N,typeof(duals)}(seeds, duals)
+end
+
+"""
+    ForwardDiff.JVPConfig(f!, y::AbstractArray, x::AbstractArray, dx::AbstractArray, chunk::Chunk = Chunk(x))
+
+Return a `JVPConfig` instance based on the type of `f!`, and the types/shapes of the
+output vector `y` and the input vectors `x` and `dx`.
+
+The returned `JVPConfig` instance contains all the work buffers required by
+`ForwardDiff.jvp` and `ForwardDiff.jvp!` when the target function takes the form `f!(y, x)`.
+
+If `f!` is `nothing` instead of the actual target function, then the returned instance can
+be used with any target function. However, this will reduce ForwardDiff's ability to catch
+and prevent perturbation confusion (see https://github.com/JuliaDiff/ForwardDiff.jl/issues/83).
+
+This constructor does not store/modify `y` or `x`.
+"""
+function JVPConfig(f::F,
+                   y::AbstractArray{Y},
+                   x::AbstractArray{X},
+                   dx::AbstractArray{X},
+                   ::Chunk{N} = Chunk(x),
+                   ::T = Tag(f, X)) where {F,Y,X,N,T}
+    seeds = construct_jvp_seeds(Partials{N,X}, dx) # TODO: add construct_jvp_seeds
+    yduals = similar(y, Dual{T,Y,N})
+    xduals = similar(x, Dual{T,X,N})
+    duals = (yduals, xduals)
+    return JVPConfig{T,X,N,typeof(duals)}(seeds, duals)
+end
+
+checktag(::JVPConfig{T},f,x) where {T} = checktag(T,f,x)
+Base.eltype(::Type{JVPConfig{T,V,N,D}}) where {T,V,N,D} = Dual{T,V,N}
+
 #################
 # HessianConfig #
 #################
