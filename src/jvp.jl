@@ -95,83 +95,65 @@ jvp(f, x::Real, dx::Real) = throw(DimensionMismatch("jvp(f, x, dx) expects that 
 # result extraction #
 #####################
 
-function extract_jvp!(::Type{T}, result::AbstractArray, ydual::AbstractArray, n) where {T}
-    out_reshaped = reshape(result, length(ydual), n)
-    ydual_reshaped = vec(ydual)
-    # Use closure to avoid GPU broadcasting with Type
-    partials_wrap(ydual, nrange) = partials(T, ydual, nrange)
-    out_reshaped .= partials_wrap.(ydual_reshaped, transpose(1:n))
+
+
+function extract_jvp!(::Type{T}, result::AbstractArray, ydual::AbstractArray) where {T}
+    result .= sum.(partials.(T, ydual))
     return result
 end
 
-function extract_jvp!(::Type{T}, result::MutableDiffResult, ydual::AbstractArray, n) where {T}
-    extract_jvp!(T, DiffResults.jvp(result), ydual, n)
+function extract_jvp!(::Type{T}, result::MutableDiffResult, ydual::AbstractArray) where {T}
+    extract_jvp!(T, DiffResults.jvp(result), ydual) # TODO: support DiffResults
     return result
 end
 
-function extract_jvp_chunk!(::Type{T}, result, ydual, index, chunksize) where {T}
-    ydual_reshaped = vec(ydual)
-    offset = index - 1
-    irange = 1:chunksize
-    col = irange .+ offset
-    # Use closure to avoid GPU broadcasting with Type
-    partials_wrap(ydual, nrange) = partials(T, ydual, nrange)
-    result[:, col] .= partials_wrap.(ydual_reshaped, transpose(irange))
+function extract_jvp_chunk!(::Type{T}, result, ydual) where {T}
+    result .+= sum.(partials.(T, ydual))
     return result
 end
-
-reshape_jvp(result, ydual, xdual) = reshape(result, length(ydual), length(xdual))
-reshape_jvp(result::DiffResult, ydual, xdual) = reshape_jvp(DiffResults.jvp(result), ydual, xdual)
 
 ###############
 # vector mode #
 ###############
 
 function vector_mode_jvp(f::F, x, cfg::JVPConfig{T}) where {F,T}
-    N = chunksize(cfg)
     ydual = vector_mode_dual_eval!(f, cfg, x)
-    ydual isa AbstractArray || throw(JVP_ERROR)
-    result = similar(ydual, valtype(eltype(ydual)), length(ydual), N)
-    extract_jvp!(T, result, ydual, N)
-    extract_value!(T, result, ydual)
+    ydual isa AbstractArray || throw(JVP_ERROR) # TODO: relax, also allow Reals
+    result = similar(ydual, valtype(eltype(ydual)))
+    extract_jvp!(T, result, ydual)
     return result
 end
 
 function vector_mode_jvp(f!::F, y, x, cfg::JVPConfig{T}) where {F,T}
-    N = chunksize(cfg)
     ydual = vector_mode_dual_eval!(f!, cfg, y, x)
     map!(d -> value(T,d), y, ydual)
-    result = similar(y, length(y), N)
-    extract_jvp!(T, result, ydual, N)
-    map!(d -> value(T,d), y, ydual)
+    result = similar(y)
+    extract_jvp!(T, result, ydual)
     return result
 end
 
 function vector_mode_jvp!(result, f::F, x, cfg::JVPConfig{T}) where {F,T}
-    N = chunksize(cfg)
     ydual = vector_mode_dual_eval!(f, cfg, x)
-    extract_jvp!(T, result, ydual, N)
-    extract_value!(T, result, ydual)
+    extract_jvp!(T, result, ydual)
     return result
 end
 
 function vector_mode_jvp!(result, f!::F, y, x, cfg::JVPConfig{T}) where {F,T}
-    N = chunksize(cfg)
     ydual = vector_mode_dual_eval!(f!, cfg, y, x)
     map!(d -> value(T,d), y, ydual)
-    extract_jvp!(T, result, ydual, N)
-    extract_value!(T, result, y, ydual)
+    extract_jvp!(T, result, ydual)
     return result
 end
 
 # TODO: scalar outputs
-const JVP_ERROR = DimensionMismatch("jvp(f, x, dx) expects that f(x) is an array. Perhaps you meant gradient(f, x)?")
+const JVP_ERROR = DimensionMismatch("jvp(f, x, dx) expects that f(x) is an array. Perhaps you meant `derivative(f, x) * dx`?")
 
+##############
 # chunk mode #
-#------------#
+##############
 
 function jvp_chunk_mode_expr(work_array_definition::Expr, compute_ydual::Expr,
-                                  result_definition::Expr, y_definition::Expr)
+                                  result_definition::Expr)
     return quote
         @assert length(x) >= N "chunk size cannot be greater than length(x) ($(N) > $(length(x)))"
 
@@ -187,70 +169,64 @@ function jvp_chunk_mode_expr(work_array_definition::Expr, compute_ydual::Expr,
         seeds = cfg.seeds
 
         # do first chunk manually to calculate output type
-        seed!(xdual, x, 1, seeds)
+        seed_jvp!(xdual, x, 1, seeds)
         $(compute_ydual)
-        ydual isa AbstractArray || throw(JVP_ERROR)
+        ydual isa AbstractArray || throw(JVP_ERROR)  # TODO: relax, also allow Reals
         $(result_definition)
-        out_reshaped = reshape_jvp(result, ydual, xdual)
-        extract_jvp_chunk!(T, out_reshaped, ydual, 1, N)
-        seed!(xdual, x, 1)
+        fill!(result, zero(V))
+        extract_jvp_chunk!(T, result, ydual)
+        seed_jvp!(xdual, x, 1)
 
         # do middle chunks
         for c in middlechunks
             i = ((c - 1) * N + 1)
-            seed!(xdual, x, i, seeds)
+            seed_jvp!(xdual, x, i, seeds)
             $(compute_ydual)
-            extract_jvp_chunk!(T, out_reshaped, ydual, i, N)
-            seed!(xdual, x, i)
+            extract_jvp_chunk!(T, result, ydual)
+            seed_jvp!(xdual, x, i)
         end
 
         # do final chunk
-        seed!(xdual, x, lastchunkindex, seeds, lastchunksize)
+        seed_jvp!(xdual, x, lastchunkindex, seeds, lastchunksize)
         $(compute_ydual)
-        extract_jvp_chunk!(T, out_reshaped, ydual, lastchunkindex, lastchunksize)
-
-        $(y_definition)
+        extract_jvp_chunk!(T, result, ydual)
 
         return result
     end
 end
 
-@eval function chunk_mode_jvp(f::F, x, cfg::JVPConfig{T,V,N}) where {F,T,V,N}
+@eval function chunk_mode_jvp(f::F, x, cfg::JVPConfig{T,V,NP,N}) where {F,T,V,NP,N}
     $(jvp_chunk_mode_expr(quote
-                                   xdual = cfg.duals
-                                   seed!(xdual, x)
-                               end,
-                               :(ydual = f(xdual)),
-                               :(result = similar(ydual, valtype(eltype(ydual)), length(ydual), xlen)),
-                               :()))
+                              xdual = cfg.duals
+                              seed_jvp!(xdual, x)
+                          end,
+                          :(ydual = f(xdual)),
+                          :(result = similar(ydual, valtype(eltype(ydual))))))
 end
 
-@eval function chunk_mode_jvp(f!::F, y, x, cfg::JVPConfig{T,V,N}) where {F,T,V,N}
+@eval function chunk_mode_jvp(f!::F, y, x, cfg::JVPConfig{T,V,NP,N}) where {F,T,V,NP,N}
     $(jvp_chunk_mode_expr(quote
-                                   ydual, xdual = cfg.duals
-                                   seed!(xdual, x)
-                               end,
-                               :(f!(seed!(ydual, y), xdual)),
-                               :(result = similar(y, length(y), xlen)),
-                               :(map!(d -> value(T,d), y, ydual))))
+                              ydual, xdual = cfg.duals
+                              seed_jvp!(xdual, x)
+                          end,
+                          :(f!(seed_jvp!(ydual, y), xdual)),
+                          :(result = similar(y))))
 end
 
-@eval function chunk_mode_jvp!(result, f::F, x, cfg::JVPConfig{T,V,N}) where {F,T,V,N}
+@eval function chunk_mode_jvp!(result, f::F, x, cfg::JVPConfig{T,V,NP,N}) where {F,T,V,NP,N}
     $(jvp_chunk_mode_expr(quote
-                                   xdual = cfg.duals
-                                   seed!(xdual, x)
-                               end,
-                               :(ydual = f(xdual)),
-                               :(),
-                               :(extract_value!(T, result, ydual))))
+                              xdual = cfg.duals
+                              seed_jvp!(xdual, x)
+                          end,
+                          :(ydual = f(xdual)),
+                          :())) # defines `result` through argument
 end
 
-@eval function chunk_mode_jvp!(result, f!::F, y, x, cfg::JVPConfig{T,V,N}) where {F,T,V,N}
+@eval function chunk_mode_jvp!(result, f!::F, y, x, cfg::JVPConfig{T,V,NP,N}) where {F,T,V,NP,N}
     $(jvp_chunk_mode_expr(quote
-                                   ydual, xdual = cfg.duals
-                                   seed!(xdual, x)
-                               end,
-                               :(f!(seed!(ydual, y), xdual)),
-                               :(),
-                               :(extract_value!(T, result, y, ydual))))
+                              ydual, xdual = cfg.duals
+                              seed_jvp!(xdual, x)
+                          end,
+                          :(f!(ydual, xdual)),
+                          :())) # defines `result` through argument
 end

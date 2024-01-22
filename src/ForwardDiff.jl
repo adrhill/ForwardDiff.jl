@@ -20,6 +20,7 @@ include("apiutils.jl")
 include("derivative.jl")
 include("gradient.jl")
 include("jacobian.jl")
+include("jvp.jl")
 include("hessian.jl")
 
 if !isdefined(Base, :get_extension)
