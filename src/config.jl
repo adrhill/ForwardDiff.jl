@@ -195,8 +195,8 @@ Base.eltype(::Type{JacobianConfig{T,V,N,D}}) where {T,V,N,D} = Dual{T,V,N}
 # JVPConfig #
 #############
 
-struct JVPConfig{T,V,N,D} <: AbstractConfig{N}
-    seeds::NTuple{N,Partials{N,V}}
+struct JVPConfig{T,V,NP,N,D} <: AbstractConfig{N}
+    seeds::NTuple{NP,Partials{N,V}}
     duals::D
 end
 
@@ -222,7 +222,7 @@ function JVPConfig(f::F,
                    ::T = Tag(f, V)) where {F,V,N,T}
     seeds = construct_jvp_seeds(Partials{N,V}, dx) # TODO: add construct_jvp_seeds
     duals = similar(x, Dual{T,V,N})
-    return JVPConfig{T,V,N,typeof(duals)}(seeds, duals)
+    return JVPConfig{T,V,length(seeds),N,typeof(duals)}(seeds, duals)
 end
 
 """
@@ -250,7 +250,7 @@ function JVPConfig(f::F,
     yduals = similar(y, Dual{T,Y,N})
     xduals = similar(x, Dual{T,X,N})
     duals = (yduals, xduals)
-    return JVPConfig{T,X,N,typeof(duals)}(seeds, duals)
+    return JVPConfig{T,X,length(seeds),N,typeof(duals)}(seeds, duals)
 end
 
 checktag(::JVPConfig{T},f,x) where {T} = checktag(T,f,x)

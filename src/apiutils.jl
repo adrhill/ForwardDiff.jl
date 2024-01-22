@@ -41,8 +41,7 @@ end
 end
 
 function construct_jvp_seeds(::Type{Partials{N,V}}, dx::AbstractArray{V}) where {N,V}
-    @assert N == length(dx) "Number of Partials must match length of JVP seed vector"
-    return tuple([single_jvp_seed(Partials{N,V}, i, x) for (i, x) in enumerate(dx)]...)
+    return tuple([single_jvp_seed(Partials{N,V}, mod1(i, N), x) for (i, x) in enumerate(dx)]...)
 end
 
 function seed!(duals::AbstractArray{Dual{T,V,N}}, x,
@@ -72,5 +71,15 @@ function seed!(duals::AbstractArray{Dual{T,V,N}}, x, index,
     seed_inds = 1:chunksize
     dual_inds = seed_inds .+ offset
     duals[dual_inds] .= Dual{T,V,N}.(view(x, dual_inds), getindex.(Ref(seeds), seed_inds))
+    return duals
+end
+
+seed_jvp!(duals, x) = seed!(duals, x)
+seed_jvp!(duals, x, index) = seed!(duals, x, index)
+function seed_jvp!(duals::AbstractArray{Dual{T,V,N}}, x, index,
+                   seeds::NTuple{NP,Partials{N,V}}, chunksize = N) where {T,V,NP,N}
+    offset = index - 1
+    dual_inds = (1:chunksize) .+ offset
+    @views duals[dual_inds] .= Dual{T,V,N}.(x[dual_inds], seeds[dual_inds])
     return duals
 end
