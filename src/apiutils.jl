@@ -18,13 +18,13 @@ end
 # vector mode function evaluation #
 ###################################
 
-function vector_mode_dual_eval!(f::F, cfg::Union{JacobianConfig,GradientConfig}, x) where {F}
+function vector_mode_dual_eval!(f::F, cfg::Union{JacobianConfig,GradientConfig,JVPConfig}, x) where {F}
     xdual = cfg.duals
     seed!(xdual, x, cfg.seeds)
     return f(xdual)
 end
 
-function vector_mode_dual_eval!(f!::F, cfg::JacobianConfig, y, x) where {F}
+function vector_mode_dual_eval!(f!::F, cfg::Union{JacobianConfig,JVPConfig}, y, x) where {F}
     ydual, xdual = cfg.duals
     seed!(xdual, x, cfg.seeds)
     seed!(ydual, y)
@@ -38,6 +38,11 @@ end
 
 @generated function construct_seeds(::Type{Partials{N,V}}) where {N,V}
     return Expr(:tuple, [:(single_seed(Partials{N,V}, Val{$i}())) for i in 1:N]...)
+end
+
+function construct_jvp_seeds(::Type{Partials{N,V}}, dx::AbstractArray{V}) where {N,V}
+    @assert N == length(dx) "Number of Partials must match length of JVP seed vector"
+    return tuple([single_jvp_seed(Partials{N,V}, i, x) for (i, x) in enumerate(dx)]...)
 end
 
 function seed!(duals::AbstractArray{Dual{T,V,N}}, x,

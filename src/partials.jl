@@ -11,6 +11,10 @@ end
     return :(Partials($(ex)))
 end
 
+function single_jvp_seed(::Type{Partials{N,V}}, i, x::V) where {N,V}
+    return Partials(tuple([ifelse(i === j, x, zero(V)) for j in 1:N]...))
+end
+
 @inline valtype(::Partials{N,V}) where {N,V} = V
 @inline valtype(::Type{Partials{N,V}}) where {N,V} = V
 
